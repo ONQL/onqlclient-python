@@ -1,0 +1,16 @@
+.venv/
+.venv/*
+venv/
+dist/
+build/
+*.egg-info
+__pycache__/
+*.pyc
+.pypirc
+%USERPROFILE%\.pypirc
+.env
+.env.*
+.envrc
+*.pem
+*.key
+secrets.json
