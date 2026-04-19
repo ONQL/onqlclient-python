@@ -4,8 +4,22 @@ Official Python client for the ONQL database server.
 
 ## Installation
 
+### From PyPI
+
 ```bash
 pip install onql-client
+```
+
+### From GitHub (latest `main`)
+
+```bash
+pip install git+https://github.com/ONQL/onqlclient-python.git
+```
+
+### Pinned to a release tag
+
+```bash
+pip install git+https://github.com/ONQL/onqlclient-python.git@v0.1.5
 ```
 
 ## Quick Start
