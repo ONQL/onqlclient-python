@@ -1,31 +1,29 @@
 # onqlclient.py
 import asyncio
 import json
-import keyword
 import socket
 import logging
 import uuid
-from typing import Dict, Optional, Callable, Any, List
+from typing import Dict, Optional, Any, List
 
-# logging.basicConfig(level=logging.INFO, format='%(asctime)s - ASYNC_CLIENT - %(levelname)s - %(message)s')
 
 class ONQLClient:
 	"""
-	An asynchronous, concurrent-safe Python client for the ONQL Go TCP server.
+	An asynchronous, concurrent-safe Python client for the ONQL TCP server.
 	"""
 	def __init__(self, default_timeout: int = 10):
 		self._reader: Optional[asyncio.StreamReader] = None
 		self._writer: Optional[asyncio.StreamWriter] = None
 		self._reader_task: Optional[asyncio.Task] = None
 		self.pending_requests: Dict[str, asyncio.Future] = {}
-		self._EOM = b'\x04'  # End-of-Message character
-		self._DELIMITER = '\x1E' # Field delimiter character
-		self.subscriptions: Dict[str, Callable[[str, str, str], Any]] = {}
+		self._EOM = b'\x04'           # End-of-Message character
+		self._DELIMITER = '\x1E'      # Field delimiter character
 		self._default_timeout = default_timeout
 		self.db: Optional[str] = None
 
 	@classmethod
-	async def create(cls, host: str = "localhost", port: int = 5656, data_limit: int = 16 * 1024 * 1024, default_timeout: int = 10):
+	async def create(cls, host: str = "localhost", port: int = 5656,
+	                 data_limit: int = 16 * 1024 * 1024, default_timeout: int = 10):
 		"""
 		Create and return a connected ONQLClient.
 
@@ -34,7 +32,6 @@ class ONQLClient:
 			port:            Server port (default: 5656).
 			data_limit:      Maximum bytes for a single read buffer (default: 16 MB).
 			default_timeout: Default request timeout in seconds (default: 10).
-			                 Can be overridden per-call in send_request().
 		"""
 		self = cls(default_timeout=default_timeout)
 		try:
@@ -57,20 +54,13 @@ class ONQLClient:
 					continue
 				response_rid, source_id, response_payload = parts
 
-				# 1) Is this a live subscription frame?
-				cb = self.subscriptions.get(response_rid)
-				if cb:
-					self._dispatch_subscription(response_rid, keyword, response_payload)
-					continue
-
 				future = self.pending_requests.get(response_rid)
 				if future and not future.done():
-					parsed_response = {
+					future.set_result({
 						"request_id": response_rid,
 						"source": source_id,
-						"payload": response_payload
-					}
-					future.set_result(parsed_response)
+						"payload": response_payload,
+					})
 				else:
 					logging.warning(f"Received response for unknown or already handled request ID: {response_rid}")
 			except asyncio.IncompleteReadError:
@@ -79,7 +69,7 @@ class ONQLClient:
 			except Exception as e:
 				logging.error(f"Error in reader loop: {e}")
 				break
-		for rid, future in self.pending_requests.items():
+		for _, future in self.pending_requests.items():
 			if not future.done():
 				future.set_exception(ConnectionError("Connection lost."))
 
@@ -115,69 +105,6 @@ class ONQLClient:
 		finally:
 			self.pending_requests.pop(request_id, None)
 
- 	# -------- NEW: subscribe / unsubscribe --------
-
-	async def subscribe(self, onquery: str, query: str, callback: Callable[[str, str, str], Any]) -> str:
-			"""
-			Open a streaming subscription. All future frames with this RID will be delivered to `callback`.
-
-			Args:
-				onquery: ONQL 'onquery' string (can be empty if server allows).
-				query:   ONQL query string to compute the payload you want pushed.
-				callback(rid, keyword, payload): function or async function.
-
-			Returns:
-				rid (str): the subscription request id (use with `unsubscribe` if needed).
-			"""
-			if not self._writer or self._writer.is_closing():
-				raise ConnectionError("Client is not connected.")
-
-			rid = self._generate_request_id()
-			self.subscriptions[rid] = callback
-
-			payload = json.dumps({"onquery": onquery, "query": query})
-			frame = f"{rid}{self._DELIMITER}subscribe{self._DELIMITER}{payload}".encode("utf-8") + self._EOM
-			self._writer.write(frame)
-			await self._writer.drain()
-			return rid
-
-	async def unsubscribe(self, rid: str):
-			"""
-			Stop receiving events for a subscription. If your server supports an
-			'unsubscribe' keyword, this sends it; otherwise we just drop the local callback.
-			"""
-			# remove local handler first (avoid any race delivering to a now 'dead' consumer)
-			self.subscriptions.pop(rid, None)
-
-			if not self._writer or self._writer.is_closing():
-				return
-
-			# Optional: tell server
-			try:
-				payload = json.dumps({"rid": rid}, separators=(",", ":"))
-				frame = f"{rid}{self._DELIMITER}unsubscribe{self._DELIMITER}{payload}".encode("utf-8") + self._EOM
-				self._writer.write(frame)
-				await self._writer.drain()
-			except Exception:
-				# Even if this fails, we've removed the local handler.
-				logging.debug("unsubscribe frame send failed (ignored)")
-
-
-	def _dispatch_subscription(self, rid: str, keyword: str, payload: str):
-			"""
-			Schedule the subscription callback without blocking the reader loop.
-			Supports both sync and async callbacks.
-			"""
-			cb = self.subscriptions.get(rid)
-			if not cb:
-				return
-			try:
-				result = cb(rid, keyword, payload)
-				if asyncio.iscoroutine(result):
-					asyncio.create_task(result)  # fire-and-forget
-			except Exception:
-				logging.exception("Error in subscription callback")
-
 	# ------------------------------------------------------------------
 	# Direct ORM-style API (insert / update / delete / onql / build)
 	# ------------------------------------------------------------------
@@ -204,12 +131,13 @@ class ONQLClient:
 			raise Exception(parsed["error"])
 		return parsed.get("data")
 
-	async def insert(self, table: str, data: Any) -> Any:
-		"""Insert one record or a list of records into ``table``.
+	async def insert(self, table: str, data: dict) -> Any:
+		"""Insert a single record into ``table``.
 
 		Args:
 			table: Target table name.
-			data:  A single record dict or a list of record dicts.
+			data:  A single record dict (one object; pass multiple records with
+			       repeated calls).
 
 		Returns:
 			The parsed ``data`` field from the server response envelope.
@@ -278,7 +206,6 @@ class ONQLClient:
 		"""Replace ``$1``, ``$2``, ... placeholders with ``values``.
 
 		Strings are double-quoted; numbers and booleans are inlined verbatim.
-		Useful for composing ONQL queries safely from application-level values.
 		"""
 		for i, value in enumerate(values):
 			placeholder = "$" + str(i + 1)

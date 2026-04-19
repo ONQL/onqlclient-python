@@ -26,26 +26,16 @@ pip install git+https://github.com/ONQL/onqlclient-python.git@v0.1.5
 
 ```python
 import asyncio
+import json
 from onqlclient import ONQLClient
 
 async def main():
     client = await ONQLClient.create("localhost", 5656)
+    client.setup("mydb")
 
-    # Execute a query
-    result = await client.send_request("onql", json.dumps({
-        "db": "mydb",
-        "table": "users",
-        "query": 'name = "John"'
-    }))
-    print(result["payload"])
-
-    # Subscribe to live updates
-    rid = await client.subscribe("", 'name = "John"', lambda rid, kw, payload:
-        print(f"Update: {payload}")
-    )
-
-    # Unsubscribe
-    await client.unsubscribe(rid)
+    await client.insert("users", {"name": "John", "age": 30})
+    rows = await client.onql('select * from mydb.users where age > 18')
+    print(rows)
 
     await client.close()
 
@@ -68,14 +58,6 @@ Creates and returns a connected client instance.
 ### `await client.send_request(keyword, payload, timeout=None)`
 
 Sends a request and waits for a response. Returns a dict with `request_id`, `source`, and `payload`.
-
-### `await client.subscribe(onquery, query, callback)`
-
-Opens a streaming subscription. Returns the subscription ID. Callback receives `(rid, keyword, payload)`.
-
-### `await client.unsubscribe(rid)`
-
-Stops receiving events for a subscription.
 
 ### `await client.close()`
 
@@ -100,19 +82,18 @@ client.setup("mydb")
 
 ### `await client.insert(table, data)`
 
-Insert one record or a list of records.
+Insert a single record.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `table` | `str` | Target table name |
-| `data` | `dict \| list[dict]` | A single record or a list of records |
+| `data` | `dict` | A single record object |
 
 Returns the parsed `data` field from the server response. Raises `Exception`
 when the server returns a non-empty `error` field.
 
 ```python
 await client.insert("users", {"name": "John", "age": 30})
-await client.insert("users", [{"name": "A"}, {"name": "B"}])
 ```
 
 ### `await client.update(table, data, query, protopass="default", ids=None)`
