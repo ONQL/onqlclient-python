@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "onql-client"
+version = "0.1.5"
+description = "ONQL Python client"
+authors = [
+    { name = "Paras Virk", email = "team@autobit.co" }
+]
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.7"
+
+[project.urls]
+Homepage = "https://onql.org"
+Repository = "https://github.com/ONQL/onqlclient-python"
+
+[tool.setuptools]
+py-modules = ["onqlclient"]
