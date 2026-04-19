@@ -26,16 +26,27 @@ pip install git+https://github.com/ONQL/onqlclient-python.git@v0.1.5
 
 ```python
 import asyncio
-import json
 from onqlclient import ONQLClient
 
 async def main():
     client = await ONQLClient.create("localhost", 5656)
-    client.setup("mydb")
 
-    await client.insert("users", {"name": "John", "age": 30})
-    rows = await client.onql('select * from mydb.users where age > 18')
+    # Insert a single record
+    await client.insert("mydb", "users", {"id": "u1", "name": "John", "age": 30})
+
+    # Read via an ONQL expression
+    rows = await client.onql('mydb.users[age>18]')
     print(rows)
+
+    # Update via a query string
+    await client.update(
+        "mydb", "users",
+        {"age": 31},
+        client.build('mydb.users[id=$1].id', "u1"),
+    )
+
+    # ...or via explicit ids
+    await client.delete("mydb", "users", "", ids=["u1"])
 
     await client.close()
 
@@ -57,7 +68,8 @@ Creates and returns a connected client instance.
 
 ### `await client.send_request(keyword, payload, timeout=None)`
 
-Sends a request and waits for a response. Returns a dict with `request_id`, `source`, and `payload`.
+Sends a request and waits for a response. Returns a dict with `request_id`,
+`source`, and `payload`.
 
 ### `await client.close()`
 
@@ -65,82 +77,77 @@ Closes the connection.
 
 ## Direct ORM-style API
 
-On top of the raw `send_request` protocol, the client ships convenience methods
-that build the standard payload envelopes for common operations and unwrap
-the `{error, data}` response automatically.
+On top of `send_request`, the client ships convenience methods that build the
+standard payload envelopes for common operations and unwrap the `{error, data}`
+response automatically.
 
-Call `client.setup(db)` once to bind a default database name; every subsequent
-`insert` / `update` / `delete` / `onql` call will use it.
+`db` is passed explicitly to `insert` / `update` / `delete`. `onql` takes a
+fully-qualified ONQL expression (which already includes the db name), so no
+separate db argument is needed.
 
-### `client.setup(db)`
+`query` arguments are **ONQL expression strings**, e.g.
+`'mydb.users[id="u1"].id'` or `'mydb.orders[status="pending"]'`. Use
+`client.build(template, *values)` to substitute `$1, $2, ...` — strings get
+double-quoted, numbers/booleans are inlined verbatim.
 
-Sets the default database. Returns `self`, so calls can be chained.
+### `await client.insert(db, table, data)`
 
-```python
-client.setup("mydb")
-```
-
-### `await client.insert(table, data)`
-
-Insert a single record.
+Insert a **single** record.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `table` | `str` | Target table name |
+| `db` | `str` | Database name |
+| `table` | `str` | Target table |
 | `data` | `dict` | A single record object |
 
-Returns the parsed `data` field from the server response. Raises `Exception`
-when the server returns a non-empty `error` field.
-
 ```python
-await client.insert("users", {"name": "John", "age": 30})
+await client.insert("mydb", "users", {"id": "u1", "name": "John", "age": 30})
 ```
 
-### `await client.update(table, data, query, protopass="default", ids=None)`
+### `await client.update(db, table, data, query="", protopass="default", ids=None)`
 
-Update records matching `query`.
+Update records matching `query` (or the explicit `ids`).
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
+| `db` | `str` | — | Database name |
 | `table` | `str` | — | Target table |
 | `data` | `dict` | — | Fields to update |
-| `query` | `dict \| str` | — | Match query |
+| `query` | `str` | `""` | ONQL query expression. Pass `""` when using `ids`. |
 | `protopass` | `str` | `"default"` | Proto-pass profile |
-| `ids` | `list[str]` | `[]` | Explicit record IDs |
+| `ids` | `list[str]` | `None` | Explicit record IDs (alternative to `query`) |
 
 ```python
-await client.update("users", {"age": 31}, {"name": "John"})
-await client.update("users", {"active": False}, {"id": "u1"}, protopass="admin")
+await client.update(
+    "mydb", "users",
+    {"age": 31},
+    client.build('mydb.users[id=$1].id', "u1"),
+)
+
+await client.update("mydb", "users", {"age": 31}, "", ids=["u1"])
 ```
 
-### `await client.delete(table, query, protopass="default", ids=None)`
+### `await client.delete(db, table, query="", protopass="default", ids=None)`
 
-Delete records matching `query`.
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `table` | `str` | — | Target table |
-| `query` | `dict \| str` | — | Match query |
-| `protopass` | `str` | `"default"` | Proto-pass profile |
-| `ids` | `list[str]` | `[]` | Explicit record IDs |
+Delete records matching `query` (or the explicit `ids`).
 
 ```python
-await client.delete("users", {"active": False})
+await client.delete("mydb", "users",
+    client.build('mydb.users[id=$1].id', "u1"))
+
+await client.delete("mydb", "users", "", ids=["u1"])
 ```
 
 ### `await client.onql(query, protopass="default", ctxkey="", ctxvalues=None)`
 
 Run a raw ONQL query. The server's `{error, data}` envelope is unwrapped.
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `query` | `str` | — | ONQL query text |
-| `protopass` | `str` | `"default"` | Proto-pass profile |
-| `ctxkey` | `str` | `""` | Context key |
-| `ctxvalues` | `list[str]` | `[]` | Context values |
-
 ```python
-rows = await client.onql('select * from users where age > 18')
+rows = await client.onql('mydb.users[age>18]')
+
+# With $-placeholder interpolation:
+by_name = await client.onql(
+    client.build('mydb.users[name=$1]', "John"))
 ```
 
 ### `client.build(query, *values)`
@@ -149,38 +156,12 @@ Replace `$1`, `$2`, … placeholders with values. Strings are automatically
 double-quoted; numbers and booleans are inlined verbatim.
 
 ```python
-q = client.build('select * from users where name = $1 and age > $2', "John", 18)
-# -> 'select * from users where name = "John" and age > 18'
+q = client.build('mydb.users[name=$1 and age>$2]', "John", 18)
+# -> 'mydb.users[name="John" and age>18]'
 rows = await client.onql(q)
 ```
 
-### Full example
-
-```python
-import asyncio
-from onqlclient import ONQLClient
-
-async def main():
-    client = await ONQLClient.create("localhost", 5656)
-    client.setup("mydb")
-
-    await client.insert("users", {"name": "John", "age": 30})
-
-    rows = await client.onql(
-        client.build("select * from users where age >= $1", 18)
-    )
-    print(rows)
-
-    await client.update("users", {"age": 31}, {"name": "John"})
-    await client.delete("users", {"name": "John"})
-    await client.close()
-
-asyncio.run(main())
-```
-
 ## Protocol
-
-The client communicates over TCP using a delimiter-based message format:
 
 ```
 <request_id>\x1E<keyword>\x1E<payload>\x04

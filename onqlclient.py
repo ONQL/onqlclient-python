@@ -19,19 +19,12 @@ class ONQLClient:
 		self._EOM = b'\x04'           # End-of-Message character
 		self._DELIMITER = '\x1E'      # Field delimiter character
 		self._default_timeout = default_timeout
-		self.db: Optional[str] = None
 
 	@classmethod
 	async def create(cls, host: str = "localhost", port: int = 5656,
 	                 data_limit: int = 16 * 1024 * 1024, default_timeout: int = 10):
 		"""
 		Create and return a connected ONQLClient.
-
-		Args:
-			host:            Server hostname (default: "localhost").
-			port:            Server port (default: 5656).
-			data_limit:      Maximum bytes for a single read buffer (default: 16 MB).
-			default_timeout: Default request timeout in seconds (default: 10).
 		"""
 		self = cls(default_timeout=default_timeout)
 		try:
@@ -107,15 +100,12 @@ class ONQLClient:
 
 	# ------------------------------------------------------------------
 	# Direct ORM-style API (insert / update / delete / onql / build)
+	#
+	# `query` arguments are ONQL expression strings, e.g.
+	#   'mydb.users[id="u1"].id'
+	#   'mydb.orders[status="pending"]'
+	# Use `build(template, *values)` to substitute $1, $2, ...
 	# ------------------------------------------------------------------
-
-	def setup(self, db: str) -> "ONQLClient":
-		"""Set the default database name used by insert/update/delete.
-
-		Returns ``self`` so calls can be chained.
-		"""
-		self.db = db
-		return self
 
 	@staticmethod
 	def _process_result(raw: str) -> Any:
@@ -131,13 +121,13 @@ class ONQLClient:
 			raise Exception(parsed["error"])
 		return parsed.get("data")
 
-	async def insert(self, table: str, data: dict) -> Any:
-		"""Insert a single record into ``table``.
+	async def insert(self, db: str, table: str, data: dict) -> Any:
+		"""Insert a single record into ``db.table``.
 
 		Args:
-			table: Target table name.
-			data:  A single record dict (one object; pass multiple records with
-			       repeated calls).
+			db:    Database name.
+			table: Target table.
+			data:  A single record dict.
 
 		Returns:
 			The parsed ``data`` field from the server response envelope.
@@ -145,24 +135,25 @@ class ONQLClient:
 		Raises:
 			Exception if the server returned a non-empty ``error`` field.
 		"""
-		payload = json.dumps({"db": self.db, "table": table, "records": data})
+		payload = json.dumps({"db": db, "table": table, "records": data})
 		res = await self.send_request("insert", payload)
 		return self._process_result(res["payload"])
 
-	async def update(self, table: str, data: Any, query: Any,
+	async def update(self, db: str, table: str, data: Any, query: str = "",
 	                 protopass: str = "default",
 	                 ids: Optional[List[str]] = None) -> Any:
-		"""Update records in ``table`` matching ``query``.
+		"""Update records in ``db.table`` matching ``query`` (or explicit ``ids``).
 
 		Args:
-			table:     Target table name.
+			db:        Database name.
+			table:     Target table.
 			data:      Fields to update.
-			query:     Match query.
+			query:     ONQL query expression string (pass ``""`` if using ``ids``).
 			protopass: Proto-pass profile (default ``"default"``).
 			ids:       Optional list of explicit record IDs.
 		"""
 		payload = json.dumps({
-			"db": self.db,
+			"db": db,
 			"table": table,
 			"records": data,
 			"query": query,
@@ -172,12 +163,12 @@ class ONQLClient:
 		res = await self.send_request("update", payload)
 		return self._process_result(res["payload"])
 
-	async def delete(self, table: str, query: Any,
+	async def delete(self, db: str, table: str, query: str = "",
 	                 protopass: str = "default",
 	                 ids: Optional[List[str]] = None) -> Any:
-		"""Delete records in ``table`` matching ``query``."""
+		"""Delete records in ``db.table`` matching ``query`` (or explicit ``ids``)."""
 		payload = json.dumps({
-			"db": self.db,
+			"db": db,
 			"table": table,
 			"query": query,
 			"protopass": protopass,
